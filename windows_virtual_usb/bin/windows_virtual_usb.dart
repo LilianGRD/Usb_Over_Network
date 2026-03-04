@@ -7,23 +7,26 @@ import 'package:uuid/uuid.dart';
 
 Future<void> main(List<String> args) async {
   try {
-    var parser = ArgParser()
-      ..addOption('atsign', abbr: 'a', help: 'The atSign of the Windows host')
+    var parser = CLIBase.createArgsParser(namespace: 'usbovernetwork')
       ..addOption(
         'mac-atsign',
         abbr: 'm',
         help: 'The atSign of the Mac USB Forwarder',
-      )
-      ..addOption(
-        'namespace',
-        abbr: 'n',
-        defaultsTo: 'usbovernetwork',
-        help: 'The namespace of the application',
-      )
-      ..addFlag('verbose', abbr: 'v', help: 'Enable verbose logging')
-      ..addFlag('help', abbr: 'h', help: 'Show usage help', negatable: false);
+      );
 
-    var results = parser.parse(args);
+    ArgResults results;
+    try {
+      results = parser.parse(args);
+    } catch (e) {
+      print('Error parsing arguments: $e');
+      if (Platform.isWindows && e.toString().contains('atsign')) {
+        print(
+          '\n💡 Hint: If using PowerShell, you MUST wrap your atSigns in quotes (e.g., "@alice"). PowerShell treats unquoted @ as an array operator.\n',
+        );
+      }
+      print(parser.usage);
+      exit(1);
+    }
 
     if (results['help']) {
       print(parser.usage);
@@ -33,13 +36,13 @@ Future<void> main(List<String> args) async {
     var atSign = results['atsign'] as String?;
     var macAtSign = results['mac-atsign'] as String?;
     var namespace = results['namespace'] as String;
-    var isVerbose = results['verbose'] as bool;
+    // var isVerbose = results['verbose'] as bool; // Handled by CLIBase
 
     if (atSign == null || macAtSign == null) {
       print('Error: Both --atsign and --mac-atsign are required.');
       if (Platform.isWindows) {
         print(
-          '💡 Hint: If using PowerShell, you MUST wrap your atSigns in quotes (e.g., "@alice"). PowerShell treats unquoted @ as an array operator.',
+          '\n💡 Hint: If using PowerShell, you MUST wrap your atSigns in quotes (e.g., "@alice"). PowerShell treats unquoted @ as an array operator.\n',
         );
       }
       print(parser.usage);
