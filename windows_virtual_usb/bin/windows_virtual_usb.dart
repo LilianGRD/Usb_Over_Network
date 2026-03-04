@@ -38,6 +38,8 @@ Future<void> main(List<String> args) async {
     var namespace = results['namespace'] as String;
     // var isVerbose = results['verbose'] as bool; // Handled by CLIBase
 
+    var isVerbose = results['verbose'] as bool? ?? false;
+
     if (atSign == null || macAtSign == null) {
       print('Error: Both --atsign and --mac-atsign are required.');
       if (Platform.isWindows) {
@@ -76,6 +78,10 @@ Future<void> main(List<String> args) async {
       '-m', macAtSign, // Manager atSign that can request tunnels
       '-d', 'usbh', // Device name matches the Npt client request
     ];
+
+    if (isVerbose) {
+      daemonArgs.add('-v');
+    }
 
     var sshnpd = await Sshnpd.fromCommandLineArgs(
       daemonArgs,

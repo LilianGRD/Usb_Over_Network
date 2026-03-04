@@ -41,6 +41,7 @@ Future<void> main(List<String> args) async {
     var sharedWith = results['shared-with'] as String?;
     var rvAtSign = results['rendezvous'] as String? ?? '@rv_core';
     var namespace = results['namespace'] as String;
+    var isVerbose = results['verbose'] as bool? ?? false;
 
     if (atSign == null || sharedWith == null) {
       print('Error: Both --atsign and --shared-with are required.');
@@ -87,6 +88,7 @@ Future<void> main(List<String> args) async {
       device: 'usbh',
       inline: true,
       timeout: Duration(days: 365),
+      verbose: isVerbose,
     );
 
     var npt = Npt.create(params: nptParams, atClient: atClient);
