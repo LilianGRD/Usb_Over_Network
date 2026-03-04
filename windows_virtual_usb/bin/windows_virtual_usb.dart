@@ -59,12 +59,11 @@ Future<void> main(List<String> args) async {
 
     print('Starting Windows Virtual USB Hub for AtSign: $atSign...');
 
-    List<String> cliArgs = List.from(args);
-    if (!cliArgs.contains('-n') && !cliArgs.contains('--namespace')) {
-      cliArgs.addAll(['-n', namespace]);
-    }
-
-    CLIBase cliBase = await CLIBase.fromCommandLineArgs(cliArgs);
+    CLIBase cliBase = await CLIBase.fromCommandLineArgs(
+      args,
+      parser: parser,
+      namespace: namespace,
+    );
     var atClient = cliBase.atClient;
     print('✅ Authenticated successfully as ${atClient.getCurrentAtSign()}');
 
