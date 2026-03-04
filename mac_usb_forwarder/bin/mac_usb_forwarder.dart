@@ -10,13 +10,12 @@ Future<void> main(List<String> args) async {
     var parser = CLIBase.createArgsParser(namespace: 'usbovernetwork')
       ..addOption(
         'shared-with',
-        abbr: 's',
+        abbr: 'w',
         help: 'The atSign of the Windows virtual hub',
       )
       ..addOption(
         'rendezvous',
-        abbr: 'r',
-        help: 'The rendezvous atSign (defaults to shared-with)',
+        help: 'The rendezvous atSign (defaults to @rv_core)',
       );
 
     ArgResults results;
@@ -40,7 +39,7 @@ Future<void> main(List<String> args) async {
 
     var atSign = results['atsign'] as String?;
     var sharedWith = results['shared-with'] as String?;
-    var rvAtSign = results['rendezvous'] as String? ?? sharedWith;
+    var rvAtSign = results['rendezvous'] as String? ?? '@rv_core';
     var namespace = results['namespace'] as String;
 
     if (atSign == null || sharedWith == null) {
