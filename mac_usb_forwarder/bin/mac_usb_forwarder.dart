@@ -2,7 +2,8 @@ import 'dart:io';
 import 'package:args/args.dart';
 import 'package:at_client/at_client.dart';
 import 'package:at_cli_commons/at_cli_commons.dart';
-import 'package:noports_core/npt.dart';
+import 'package:noports_core/sshnp.dart';
+import 'package:noports_core/sshnp_foundation.dart';
 import 'package:uuid/uuid.dart';
 
 Future<void> main(List<String> args) async {
@@ -15,7 +16,7 @@ Future<void> main(List<String> args) async {
       )
       ..addOption(
         'rendezvous',
-        help: 'The rendezvous atSign (defaults to @rv_core)',
+        help: 'The rendezvous atSign (defaults to @rv_eu)',
       );
 
     ArgResults results;
@@ -39,9 +40,9 @@ Future<void> main(List<String> args) async {
 
     var atSign = results['atsign'] as String?;
     var sharedWith = results['shared-with'] as String?;
-    var rvAtSign = results['rendezvous'] as String? ?? '@rv_core';
+    var rvAtSign = results['rendezvous'] as String? ?? '@rv_eu';
     var namespace = results['namespace'] as String;
-    var isVerbose = results['verbose'] as bool? ?? false;
+    var isVerbose = results['verbose'] as bool? ?? true;
 
     if (atSign == null || sharedWith == null) {
       print('Error: Both --atsign and --shared-with are required.');
@@ -74,35 +75,47 @@ Future<void> main(List<String> args) async {
     var atClient = cliBase.atClient;
     print('✅ Authenticated successfully as ${atClient.getCurrentAtSign()}');
 
+    // --- Starlink CGNAT-hardened SshnpParams ---
+    // Forces port 443 (only443) to bypass CGNAT restrictions,
+    // uses ESCR relay auth mode, increases idleTimeout to 60s
+    // to compensate for satellite jitter, and sets up SSH local
+    // port forwarding for USBIP traffic on port 3240.
     print(
-      '🔌 Initializing NPT rendezvous TCP tunnel to $sharedWith (via $rvAtSign)...',
+      '🔌 Initializing SSH tunnel to $sharedWith (via $rvAtSign) with Starlink CGNAT config...',
     );
 
-    var nptParams = NptParams(
+    var params = SshnpParams(
       clientAtSign: atSign!,
       sshnpdAtSign: sharedWith!,
-      srvdAtSign: rvAtSign ?? sharedWith!,
-      remoteHost: '127.0.0.1',
-      remotePort: 4000,
-      localPort: 4001,
+      srvdAtSign: rvAtSign,
       device: 'usbh',
-      inline: true,
-      timeout: Duration(days: 365),
+      only443: true,
+      relayAuthMode: RelayAuthMode.escr,
+      idleTimeout: 60,
+      localSshOptions: ['-L 3240:127.0.0.1:3240'],
       verbose: isVerbose,
     );
 
-    var npt = Npt.create(params: nptParams, atClient: atClient);
+    var sshnp = Sshnp.openssh(atClient: atClient, params: params);
 
-    print('⏳ Waiting for atPlatform rendezvous tunnel...');
-    await npt.runInline();
+    print('⏳ Waiting for SSH tunnel establishment via atPlatform rendezvous...');
+    var result = await sshnp.run();
 
-    print('🔌 Connecting to local TCP loopback over E2E Tunnel...');
-    // We wait briefly for the socket connector to bind locally
+    if (result is SshnpSuccess) {
+      print('✅ SSH tunnel established successfully!');
+      print('   Local forwarding: localhost:3240 → device:3240 (USBIP)');
+    } else if (result is SshnpError) {
+      print('❌ SSH tunnel failed: ${result.message}');
+      exit(1);
+    }
+
+    print('🔌 Connecting to local TCP loopback over SSH tunnel...');
+    // Wait briefly for the SSH port forwarding to bind locally
     await Future.delayed(Duration(seconds: 2));
 
-    var socket = await Socket.connect('127.0.0.1', 4001);
+    var socket = await Socket.connect('127.0.0.1', 3240);
 
-    print('�� Starting High-Frequency USB Stream passing to Windows NAT...');
+    print('🚀 Starting High-Frequency USB Stream passing to Windows NAT...');
     // Simulate high frequency USB polling stream directly over the socket instead of notifications
     Stream.periodic(
       Duration(milliseconds: 100),
@@ -131,3 +144,4 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 }
+

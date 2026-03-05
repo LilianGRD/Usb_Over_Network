@@ -94,8 +94,8 @@ Future<void> main(List<String> args) async {
 
     print('✅ Daemon running to handle NAT-punching NPT rendezvous requests...');
 
-    print('🚀 Setting up Local Virtual Hub listener on port 4000...');
-    var hubSocket = await ServerSocket.bind('127.0.0.1', 4000);
+    print('🚀 Setting up Local Virtual Hub listener on port 3240...');
+    var hubSocket = await ServerSocket.bind('127.0.0.1', 3240);
     print(
       '✅ Hub Listening on ${hubSocket.address.address}:${hubSocket.port} for proxy traffic',
     );
