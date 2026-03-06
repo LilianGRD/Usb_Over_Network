@@ -1,9 +1,12 @@
 name: mac_usb_forwarder
-description: Mac USB Forwarder — connects to an existing NoPorts SSH tunnel and streams USB data.
+description: Mac USB Forwarder — captures USB devices and forwards data over TCP tunnel.
 version: 1.0.0
 
 environment:
   sdk: ^3.11.1
+
+dependencies:
+  ffi: ^2.1.0
 
 dev_dependencies:
   lints: ^6.0.0
