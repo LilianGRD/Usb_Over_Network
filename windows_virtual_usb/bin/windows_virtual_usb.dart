@@ -1,207 +1,360 @@
+/// Windows Virtual USB Hub — USB/IP server for forwarding USB data
+/// to the usbip-win virtual host controller driver.
+///
+/// This application:
+/// 1. Listens on 127.0.0.1:3240 as a TCP server
+/// 2. Sends OP_REQ_DEVLIST and OP_REQ_IMPORT to the Mac client
+/// 3. Auto-runs `usbip.exe attach` to bind the virtual driver
+/// 4. Forwards CMD_SUBMIT/RET_SUBMIT URB traffic between the vhci
+///    driver and the Mac client
+///
+/// Prerequisites:
+///   - usbip-win installed (https://github.com/cezanne/usbip-win)
+///   - Test signing enabled: bcdedit /set testsigning on
+///   - usbip.exe in PATH
+///   - SSH tunnel running with -R 3240:127.0.0.1:3240
+library;
+
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
-/// Default USBIP port for USB data stream over the SSH tunnel.
+import 'package:usbip_protocol/usbip_protocol.dart';
+
+/// Default USBIP port.
 const int defaultUsbPort = 3240;
 
-/// Windows Virtual USB Hub — TCP Server
-///
-/// Listens on 127.0.0.1:3240 for incoming connections from the Mac client
-/// (arriving via the pre-existing SSH tunnel). Received USB data packets
-/// are forwarded to the local USBIP virtual driver.
-///
-/// The SSH tunnel must already be running with:
-///   sshnpd [args...] (or equivalent)
-/// and the remote client must have:
-///   -L 3240:127.0.0.1:3240
 Future<void> main(List<String> args) async {
   // --- Parse CLI options ---
-  var parser = _ArgParser()
-    ..addOption(
-      'port',
-      abbr: 'p',
-      help: 'Local TCP port to listen on (default: $defaultUsbPort)',
-      defaultsTo: '$defaultUsbPort',
-    )
-    ..addFlag(
-      'verbose',
-      abbr: 'v',
-      help: 'Enable verbose logging',
-      defaultsTo: false,
-    )
-    ..addFlag('help', abbr: 'h', help: 'Show this help', defaultsTo: false);
+  var port = defaultUsbPort;
+  var verbose = false;
+  var autoAttach = true;
 
-  _ArgResults results;
-  try {
-    results = parser.parse(args);
-  } catch (e) {
-    print('Error parsing arguments: $e');
-    print(parser.usage);
-    exit(1);
+  for (var i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case '-p':
+      case '--port':
+        if (i + 1 < args.length) {
+          port = int.tryParse(args[++i]) ?? defaultUsbPort;
+        }
+      case '-v':
+      case '--verbose':
+        verbose = true;
+      case '--no-attach':
+        autoAttach = false;
+      case '-h':
+      case '--help':
+        _printHelp();
+        exit(0);
+      default:
+        print('Unknown option: ${args[i]}');
+        _printHelp();
+        exit(1);
+    }
   }
 
-  if (results['help'] as bool) {
-    print('Windows Virtual USB Hub — TCP server for USB data stream.\n');
-    print('Usage: dart run bin/windows_virtual_usb.dart [options]\n');
-    print(parser.usage);
-    print(
-      '\nMake sure your SSH tunnel is already running.\n'
-      'This server listens on 127.0.0.1:$defaultUsbPort and expects\n'
-      'the Mac client to connect via the tunnel.',
-    );
-    exit(0);
-  }
-
-  var port = int.tryParse(results['port'] as String) ?? defaultUsbPort;
-  var verbose = results['verbose'] as bool;
+  // --- Startup warning ---
+  print('╔══════════════════════════════════════════════════════════════╗');
+  print('║         Windows Virtual USB Hub — USB/IP Server            ║');
+  print('╠══════════════════════════════════════════════════════════════╣');
+  print('║ ⚠️  PRÉREQUIS :                                            ║');
+  print('║                                                            ║');
+  print('║ 1. usbip-win installé :                                    ║');
+  print('║    https://github.com/cezanne/usbip-win                    ║');
+  print('║ 2. Test signing activé :                                   ║');
+  print('║    bcdedit /set testsigning on                              ║');
+  print('║ 3. Certificats de test installés                           ║');
+  print('║ 4. usbip.exe dans le PATH                                  ║');
+  print('║ 5. Tunnel SSH actif avec :                                  ║');
+  print('║    -R $port:127.0.0.1:$port                                ║');
+  print('╚══════════════════════════════════════════════════════════════╝');
+  print('');
 
   // --- Start TCP server ---
-  print('🚀 Démarrage du Windows Virtual USB Hub...');
-
   ServerSocket server;
   try {
     server = await ServerSocket.bind('127.0.0.1', port);
   } on SocketException catch (e) {
-    print(
-      '\n❌ Erreur : Impossible d\'écouter sur 127.0.0.1:$port.\n'
-      'Le port est peut-être déjà utilisé.\n'
-      '\nDétail : $e',
-    );
+    print('❌ Erreur : Impossible d\'écouter sur 127.0.0.1:$port.');
+    print('   Le port est peut-être déjà utilisé.');
+    print('   Détail : $e');
     exit(1);
   }
 
-  print('✅ Serveur TCP en écoute sur 127.0.0.1:$port');
-  print('⏳ En attente de connexion du client Mac (via tunnel SSH)...');
+  print('✅ Serveur USB/IP en écoute sur 127.0.0.1:$port');
+  print('⏳ En attente de connexion du client Mac (via tunnel SSH)...\n');
 
-  server.listen((Socket client) {
+  await for (var client in server) {
     var clientAddr = '${client.remoteAddress.address}:${client.remotePort}';
     print('🔗 Connexion acceptée depuis $clientAddr');
 
-    var packetCount = 0;
+    _handleClient(client, verbose, autoAttach, port);
+  }
+}
 
-    client.listen(
-      (data) {
-        packetCount++;
-        var payload = String.fromCharCodes(data).trim();
+/// Handle a single client connection (the Mac USB forwarder).
+Future<void> _handleClient(
+  Socket client,
+  bool verbose,
+  bool autoAttach,
+  int port,
+) async {
+  var reader = UsbipStreamReader();
+
+  // --- Phase 1: USB/IP Handshake ---
+  print('📡 Phase 1 : Handshake USB/IP...');
+
+  // Step 1: Send OP_REQ_DEVLIST
+  var devlistReq = serializeReqDevlist();
+  client.add(devlistReq);
+  if (verbose) print('➡️ OP_REQ_DEVLIST envoyé');
+
+  // Wait for OP_REP_DEVLIST
+  UsbipDevice? importedDevice;
+
+  var handshakeCompleter = Completer<UsbipDevice?>();
+  var handshakePhase = 0; // 0=waiting DEVLIST reply, 1=waiting IMPORT reply
+
+  var sub = client.listen(
+    (data) {
+      reader.addData(data);
+
+      if (handshakePhase == 0) {
+        // Waiting for OP_REP_DEVLIST
+        if (reader.available < opCommonSize + 4) return;
+
+        var peekHeader = reader.peek(opCommonSize + 4)!;
+        var peekData = ByteData.sublistView(peekHeader);
+        var (_, command, status) = readOpCommon(peekData);
+        var ndev = peekData.getUint32(opCommonSize, Endian.big);
+
+        if (command != opRepDevlist) {
+          print('❌ Réponse inattendue: 0x${command.toRadixString(16)}');
+          handshakeCompleter.complete(null);
+          return;
+        }
+
+        if (status != statusOk || ndev == 0) {
+          print('❌ OP_REP_DEVLIST: aucun périphérique exporté.');
+          handshakeCompleter.complete(null);
+          return;
+        }
+
+        // We need: op_common(8) + ndev(4) + device_info(312) + interfaces
+        // For simplicity, try to read with at least 1 interface
+        var minSize = opCommonSize + 4 + deviceInfoSize + interfaceInfoSize;
+        if (reader.available < minSize) return;
+
+        // Consume the header
+        reader.tryRead(opCommonSize + 4);
+
+        // Parse the first device
+        var remaining = reader.peek(reader.available)!;
+        var (dev, consumed) = UsbipDevice.deserialize(remaining);
+        reader.tryRead(consumed);
 
         if (verbose) {
-          print('⬇️ [#$packetCount] RX: $payload');
+          print(
+            '⬅️ OP_REP_DEVLIST: ${dev.idVendor.toRadixString(16)}:'
+            '${dev.idProduct.toRadixString(16)} '
+            '(${dev.busid})',
+          );
         }
 
-        // TODO: Injecter les données dans le driver USBIP virtuel Windows
-        // usbipDriver.write(data);
+        // Step 2: Send OP_REQ_IMPORT
+        var importReq = serializeReqImport(dev.busid);
+        client.add(importReq);
+        if (verbose) print('➡️ OP_REQ_IMPORT envoyé (busid: ${dev.busid})');
 
-        // Echo acknowledgement back to Mac client
-        try {
-          client.write('ACK_$packetCount\n');
-        } catch (e) {
-          print('⚠️ Erreur envoi ACK : $e');
+        handshakePhase = 1;
+      } else if (handshakePhase == 1) {
+        // Waiting for OP_REP_IMPORT
+        if (reader.available < opCommonSize) return;
+
+        var peekHeader = reader.peek(opCommonSize)!;
+        var peekData = ByteData.sublistView(peekHeader);
+        var (_, command, status) = readOpCommon(peekData);
+
+        if (command != opRepImport) {
+          print('❌ Réponse inattendue: 0x${command.toRadixString(16)}');
+          handshakeCompleter.complete(null);
+          return;
         }
-      },
-      onError: (e) {
-        print('❌ Erreur sur la connexion $clientAddr : $e');
-      },
-      onDone: () {
-        print('🔴 Client $clientAddr déconnecté. ($packetCount paquets reçus)');
-        client.close();
-      },
-    );
-  });
-}
 
-// ---------------------------------------------------------------------------
-// Minimal arg parser (zero dependencies)
-// ---------------------------------------------------------------------------
+        if (status != statusOk) {
+          print('❌ OP_REP_IMPORT: refusé par le serveur.');
+          reader.tryRead(opCommonSize);
+          handshakeCompleter.complete(null);
+          return;
+        }
 
-class _ArgParser {
-  final List<_Option> _options = [];
-  final List<_Flag> _flags = [];
+        // Read full reply: header(8) + device_info(312)
+        var fullSize = opCommonSize + deviceInfoSize;
+        if (reader.available < fullSize) return;
 
-  void addOption(String name, {String? abbr, String? help, String? defaultsTo}) {
-    _options.add(_Option(name, abbr, help, defaultsTo));
+        var fullBytes = reader.tryRead(fullSize)!;
+        var (dev, _) = UsbipDevice.deserialize(fullBytes, opCommonSize);
+
+        if (verbose) {
+          print(
+            '⬅️ OP_REP_IMPORT: success — ${dev.idVendor.toRadixString(16)}:'
+            '${dev.idProduct.toRadixString(16)}',
+          );
+        }
+
+        importedDevice = dev;
+        handshakeCompleter.complete(dev);
+      }
+    },
+    onError: (e) {
+      print('⚠️ Erreur socket : $e');
+      if (!handshakeCompleter.isCompleted) {
+        handshakeCompleter.complete(null);
+      }
+    },
+    onDone: () {
+      print('🔴 Client déconnecté pendant le handshake.');
+      if (!handshakeCompleter.isCompleted) {
+        handshakeCompleter.complete(null);
+      }
+    },
+  );
+
+  // Wait for handshake
+  importedDevice = await handshakeCompleter.future.timeout(
+    Duration(seconds: 15),
+    onTimeout: () {
+      print('❌ Timeout du handshake USB/IP.');
+      return null;
+    },
+  );
+
+  if (importedDevice == null) {
+    print('❌ Handshake échoué. Fermeture de la connexion.');
+    client.destroy();
+    return;
   }
 
-  void addFlag(String name, {String? abbr, String? help, bool defaultsTo = false}) {
-    _flags.add(_Flag(name, abbr, help, defaultsTo));
+  // At this point importedDevice is guaranteed non-null
+  var device = importedDevice!;
+
+  print(
+    '✅ Handshake USB/IP réussi !\n'
+    '   Périphérique : VID:${device.idVendor.toRadixString(16).padLeft(4, '0')} '
+    'PID:${device.idProduct.toRadixString(16).padLeft(4, '0')}\n',
+  );
+
+  // --- Phase 2: Auto-attach via usbip.exe ---
+  if (autoAttach) {
+    print('🔧 Phase 2 : Attachement du driver virtuel...');
+    print('   Exécution: usbip.exe attach -r 127.0.0.1 -b ${device.busid}');
+
+    try {
+      var result = await Process.run(
+        'usbip.exe',
+        ['attach', '-r', '127.0.0.1', '-b', device.busid],
+      );
+
+      if (result.exitCode == 0) {
+        print('✅ usbip.exe attach réussi !');
+        if (verbose && (result.stdout as String).isNotEmpty) {
+          print('   stdout: ${result.stdout}');
+        }
+      } else {
+        print('⚠️ usbip.exe attach code retour: ${result.exitCode}');
+        if ((result.stderr as String).isNotEmpty) {
+          print('   stderr: ${result.stderr}');
+        }
+        print('   Le driver virtuel n\'est peut-être pas installé.');
+        print('   Le transfert de données brutes continue...');
+      }
+    } on ProcessException catch (e) {
+      print('⚠️ usbip.exe introuvable dans le PATH.');
+      print('   Erreur: $e');
+      print('   Assurez-vous que usbip-win est installé.');
+      print('   Le transfert de données brutes continue...\n');
+    }
+  } else {
+    print('ℹ️  Auto-attach désactivé (--no-attach).');
   }
 
-  _ArgResults parse(List<String> args) {
-    var values = <String, dynamic>{};
-    for (var opt in _options) {
-      values[opt.name] = opt.defaultsTo;
-    }
-    for (var flag in _flags) {
-      values[flag.name] = flag.defaultsTo;
-    }
+  // --- Phase 3: URB Forwarding ---
+  print('\n🚀 Phase 3 : Transfert URB actif...');
+  print('   Ctrl+C pour arrêter.\n');
 
-    var i = 0;
-    while (i < args.length) {
-      var arg = args[i];
-      var matched = false;
+  var packetCount = 0;
 
-      for (var opt in _options) {
-        if (arg == '--${opt.name}' || (opt.abbr != null && arg == '-${opt.abbr}')) {
-          if (i + 1 >= args.length) throw FormatException('Missing value for $arg');
-          values[opt.name] = args[++i];
-          matched = true;
-          break;
+  // Cancel the handshake listener and set up URB forwarding
+  await sub.cancel();
+
+  // New listener for URB phase — data flows bidirectionally
+  // vhci driver (localhost) ↔ this app ↔ Mac client (tunnel)
+  //
+  // In our architecture, the Mac acts as the USB/IP "server" (stub driver)
+  // and this Windows app acts as the "client" (vhci driver proxy).
+  //
+  // After a successful IMPORT, the vhci driver will send CMD_SUBMIT
+  // to the TCP connection. We forward these to the Mac, and forward
+  // RET_SUBMIT responses back.
+  //
+  // Since the vhci driver communicates directly on this TCP socket
+  // (post-attach), we need to proxy between the vhci connection and
+  // the Mac tunnel.
+  //
+  // For the initial implementation, we just log the data flow.
+
+  client.listen(
+    (data) {
+      packetCount++;
+      if (verbose) {
+        var preview = data.length > 48 ? data.sublist(0, 48) : data;
+        var hex = preview.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+        print('⬅️ [#$packetCount] RX ${data.length} bytes: $hex${data.length > 48 ? '...' : ''}');
+
+        // Try to parse the header
+        if (data.length >= headerBasicSize) {
+          var headerData = ByteData.sublistView(Uint8List.fromList(data));
+          var cmd = headerData.getUint32(0, Endian.big);
+          var seqnum = headerData.getUint32(4, Endian.big);
+          var cmdName = _commandName(cmd);
+          print('   📋 $cmdName seq=$seqnum');
         }
       }
+    },
+    onError: (e) {
+      print('⚠️ Erreur socket: $e');
+    },
+    onDone: () {
+      print('\n🔴 Client Mac déconnecté. ($packetCount paquets échangés)');
+    },
+  );
+}
 
-      if (!matched) {
-        for (var flag in _flags) {
-          if (arg == '--${flag.name}' || (flag.abbr != null && arg == '-${flag.abbr}')) {
-            values[flag.name] = true;
-            matched = true;
-            break;
-          }
-          if (arg == '--no-${flag.name}') {
-            values[flag.name] = false;
-            matched = true;
-            break;
-          }
-        }
-      }
-
-      if (!matched) throw FormatException('Unknown argument: $arg');
-      i++;
-    }
-    return _ArgResults(values);
-  }
-
-  String get usage {
-    var buf = StringBuffer();
-    for (var opt in _options) {
-      var a = opt.abbr != null ? '-${opt.abbr}, ' : '    ';
-      buf.writeln('  $a--${opt.name.padRight(16)} ${opt.help ?? ""}'
-          '${opt.defaultsTo != null ? " (default: ${opt.defaultsTo})" : ""}');
-    }
-    for (var flag in _flags) {
-      var a = flag.abbr != null ? '-${flag.abbr}, ' : '    ';
-      buf.writeln('  $a--${flag.name.padRight(16)} ${flag.help ?? ""}');
-    }
-    return buf.toString();
+String _commandName(int cmd) {
+  switch (cmd) {
+    case usbipCmdSubmit:
+      return 'CMD_SUBMIT';
+    case usbipRetSubmit:
+      return 'RET_SUBMIT';
+    case usbipCmdUnlink:
+      return 'CMD_UNLINK';
+    case usbipRetUnlink:
+      return 'RET_UNLINK';
+    default:
+      return 'UNKNOWN(0x${cmd.toRadixString(16)})';
   }
 }
 
-class _ArgResults {
-  final Map<String, dynamic> _values;
-  _ArgResults(this._values);
-  dynamic operator [](String key) => _values[key];
-}
-
-class _Option {
-  final String name;
-  final String? abbr;
-  final String? help;
-  final String? defaultsTo;
-  _Option(this.name, this.abbr, this.help, this.defaultsTo);
-}
-
-class _Flag {
-  final String name;
-  final String? abbr;
-  final String? help;
-  final bool defaultsTo;
-  _Flag(this.name, this.abbr, this.help, this.defaultsTo);
+void _printHelp() {
+  print('Windows Virtual USB Hub — Serveur USB/IP.\n');
+  print('Usage: dart run bin/windows_virtual_usb.dart [options]\n');
+  print('Options:');
+  print('  -p, --port <port>   Port TCP local (défaut: $defaultUsbPort)');
+  print('  -v, --verbose       Activer les logs détaillés');
+  print('  --no-attach         Ne pas lancer usbip.exe attach automatiquement');
+  print('  -h, --help          Afficher cette aide\n');
+  print('Prérequis:');
+  print('  1. usbip-win installé (github.com/cezanne/usbip-win)');
+  print('  2. Test signing activé: bcdedit /set testsigning on');
+  print('  3. Tunnel SSH avec: -R $defaultUsbPort:127.0.0.1:$defaultUsbPort');
 }

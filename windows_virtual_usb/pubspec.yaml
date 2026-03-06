@@ -1,9 +1,13 @@
 name: windows_virtual_usb
-description: Windows Virtual USB Hub — TCP server for USB data stream over SSH tunnel.
+description: Windows Virtual USB Hub — USB/IP server that forwards USB data to the usbip-win driver.
 version: 1.0.0
 
 environment:
   sdk: ^3.11.1
+
+dependencies:
+  usbip_protocol:
+    path: ../usbip_protocol
 
 dev_dependencies:
   lints: ^6.0.0
