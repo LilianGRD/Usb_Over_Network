@@ -1,147 +1,223 @@
+import 'dart:async';
 import 'dart:io';
-import 'package:args/args.dart';
-import 'package:at_client/at_client.dart';
-import 'package:at_cli_commons/at_cli_commons.dart';
-import 'package:noports_core/sshnp.dart';
-import 'package:noports_core/sshnp_foundation.dart';
-import 'package:uuid/uuid.dart';
+
+/// Default USBIP port used for local SSH tunnel forwarding.
+const int defaultUsbPort = 3240;
 
 Future<void> main(List<String> args) async {
+  // --- Parse CLI options ---
+  var parser = ArgParser()
+    ..addOption(
+      'port',
+      abbr: 'p',
+      help: 'Local TCP port to connect to (default: $defaultUsbPort)',
+      defaultsTo: '$defaultUsbPort',
+    )
+    ..addFlag(
+      'verbose',
+      abbr: 'v',
+      help: 'Enable verbose logging',
+      defaultsTo: false,
+    )
+    ..addFlag('help', abbr: 'h', help: 'Show this help', defaultsTo: false);
+
+  ArgResults results;
   try {
-    var parser = CLIBase.createArgsParser(namespace: 'usbovernetwork')
-      ..addOption(
-        'shared-with',
-        abbr: 'w',
-        help: 'The atSign of the Windows virtual hub',
-      )
-      ..addOption(
-        'rendezvous',
-        help: 'The rendezvous atSign (defaults to @rv_eu)',
-      );
-
-    ArgResults results;
-    try {
-      results = parser.parse(args);
-    } catch (e) {
-      print('Error parsing arguments: $e');
-      if (Platform.isWindows && e.toString().contains('atsign')) {
-        print(
-          '\n💡 Hint: If using PowerShell, you MUST wrap your atSigns in quotes (e.g., "@alice"). PowerShell treats unquoted @ as an array operator.\n',
-        );
-      }
-      print(parser.usage);
-      exit(1);
-    }
-
-    if (results['help']) {
-      print(parser.usage);
-      exit(0);
-    }
-
-    var atSign = results['atsign'] as String?;
-    var sharedWith = results['shared-with'] as String?;
-    var rvAtSign = results['rendezvous'] as String? ?? '@rv_eu';
-    var namespace = results['namespace'] as String;
-    var isVerbose = results['verbose'] as bool? ?? true;
-
-    if (atSign == null || sharedWith == null) {
-      print('Error: Both --atsign and --shared-with are required.');
-      if (Platform.isWindows) {
-        print(
-          '\n💡 Hint: If using PowerShell, you MUST wrap your atSigns in quotes (e.g., "@alice"). PowerShell treats unquoted @ as an array operator.\n',
-        );
-      }
-      print(parser.usage);
-      exit(1);
-    }
-    var sessionId = Uuid().v4();
-    var storageDir = Directory.systemTemp
-        .createTempSync('mac_usb_$sessionId')
-        .path;
-
-    AtClientPreference prefs = AtClientPreference()
-      ..hiveStoragePath = storageDir
-      ..commitLogPath = storageDir
-      ..isLocalStoreRequired = true
-      ..rootDomain = 'root.atsign.org';
-
-    print('Starting Mac USB Forwarder for AtSign: $atSign...');
-
-    CLIBase cliBase = await CLIBase.fromCommandLineArgs(
-      args,
-      parser: parser,
-      namespace: namespace,
-    );
-    var atClient = cliBase.atClient;
-    print('✅ Authenticated successfully as ${atClient.getCurrentAtSign()}');
-
-    // --- Starlink CGNAT-hardened SshnpParams ---
-    // Forces port 443 (only443) to bypass CGNAT restrictions,
-    // uses ESCR relay auth mode, increases idleTimeout to 60s
-    // to compensate for satellite jitter, and sets up SSH local
-    // port forwarding for USBIP traffic on port 3240.
-    print(
-      '🔌 Initializing SSH tunnel to $sharedWith (via $rvAtSign) with Starlink CGNAT config...',
-    );
-
-    var params = SshnpParams(
-      clientAtSign: atSign!,
-      sshnpdAtSign: sharedWith!,
-      srvdAtSign: rvAtSign,
-      device: 'usbh',
-      only443: true,
-      relayAuthMode: RelayAuthMode.escr,
-      idleTimeout: 60,
-      localSshOptions: ['-L 3240:127.0.0.1:3240'],
-      verbose: isVerbose,
-    );
-
-    var sshnp = Sshnp.openssh(atClient: atClient, params: params);
-
-    print('⏳ Waiting for SSH tunnel establishment via atPlatform rendezvous...');
-    var result = await sshnp.run();
-
-    if (result is SshnpSuccess) {
-      print('✅ SSH tunnel established successfully!');
-      print('   Local forwarding: localhost:3240 → device:3240 (USBIP)');
-    } else if (result is SshnpError) {
-      print('❌ SSH tunnel failed: ${result.message}');
-      exit(1);
-    }
-
-    print('🔌 Connecting to local TCP loopback over SSH tunnel...');
-    // Wait briefly for the SSH port forwarding to bind locally
-    await Future.delayed(Duration(seconds: 2));
-
-    var socket = await Socket.connect('127.0.0.1', 3240);
-
-    print('🚀 Starting High-Frequency USB Stream passing to Windows NAT...');
-    // Simulate high frequency USB polling stream directly over the socket instead of notifications
-    Stream.periodic(
-      Duration(milliseconds: 100),
-      (count) => 'USB_DATA_PACKET_$count\n',
-    ).listen((data) {
-      try {
-        socket.write(data);
-      } catch (e) {
-        print('Connection lost or error writing to socket: $e');
-      }
-    });
-
-    socket.listen(
-      (data) {
-        print(
-          '⬅️ Received from Windows over TCP: ${String.fromCharCodes(data)}',
-        );
-      },
-      onDone: () {
-        print('🔴 Virtual USB Hub socket disconnected.');
-      },
-    );
-  } catch (e, stacktrace) {
-    print('Failed to start Mac USB Forwarder: $e');
-    print(stacktrace);
+    results = parser.parse(args);
+  } catch (e) {
+    print('Error parsing arguments: $e');
+    print(parser.usage);
     exit(1);
+  }
+
+  if (results['help'] as bool) {
+    print('Mac USB Forwarder — connects to an existing NoPorts SSH tunnel.\n');
+    print('Usage: dart run bin/mac_usb_forwarder.dart [options]\n');
+    print(parser.usage);
+    print(
+      '\nMake sure your NoPorts tunnel is already running, for example:\n'
+      "  sshnp [args...] -o '-L $defaultUsbPort:127.0.0.1:$defaultUsbPort'",
+    );
+    exit(0);
+  }
+
+  var port = int.tryParse(results['port'] as String) ?? defaultUsbPort;
+  var verbose = results['verbose'] as bool;
+
+  // --- Fail-fast: verify tunnel is reachable ---
+  print('🔍 Vérification du tunnel local sur 127.0.0.1:$port...');
+
+  Socket socket;
+  try {
+    socket = await Socket.connect(
+      '127.0.0.1',
+      port,
+      timeout: Duration(seconds: 5),
+    );
+  } on SocketException catch (e) {
+    print(
+      '\n❌ Erreur : Le tunnel réseau n\'est pas actif.\n'
+      'Veuillez lancer votre tunnel NoPorts avec le transfert de port USB inclus, par exemple :\n'
+      "  sshnp [args...] -o '-L $port:127.0.0.1:$port'\n"
+      '\nDétail : $e',
+    );
+    exit(1);
+  } on TimeoutException {
+    print(
+      '\n❌ Erreur : Le tunnel réseau n\'est pas actif (timeout).\n'
+      'Veuillez lancer votre tunnel NoPorts avec le transfert de port USB inclus, par exemple :\n'
+      "  sshnp [args...] -o '-L $port:127.0.0.1:$port'",
+    );
+    exit(1);
+  }
+
+  print('✅ Connecté au tunnel local 127.0.0.1:$port');
+
+  // --- USB stream: pipe data directly into the tunnel socket ---
+  print('🚀 Démarrage du flux USB haute fréquence vers le tunnel...');
+
+  // Pipe USB data packets into the socket at 10 Hz
+  var packetCount = 0;
+  var timer = Timer.periodic(Duration(milliseconds: 100), (_) {
+    try {
+      var packet = 'USB_DATA_PACKET_${packetCount++}\n';
+      socket.write(packet);
+      if (verbose) {
+        stdout.write('➡️ $packet');
+      }
+    } catch (e) {
+      print('⚠️ Erreur écriture socket : $e');
+    }
+  });
+
+  // Listen for responses from the Windows side
+  socket.listen(
+    (data) {
+      var message = String.fromCharCodes(data);
+      if (verbose) {
+        print('⬅️ Reçu de Windows : $message');
+      }
+    },
+    onError: (e) {
+      print('⚠️ Erreur lecture socket : $e');
+      timer.cancel();
+    },
+    onDone: () {
+      print('🔴 Tunnel déconnecté.');
+      timer.cancel();
+      exit(0);
+    },
+  );
+}
+
+class ArgParser {
+  final List<_Option> _options = [];
+  final List<_Flag> _flags = [];
+
+  void addOption(
+    String name, {
+    String? abbr,
+    String? help,
+    String? defaultsTo,
+  }) {
+    _options.add(_Option(name, abbr, help, defaultsTo));
+  }
+
+  void addFlag(
+    String name, {
+    String? abbr,
+    String? help,
+    bool defaultsTo = false,
+  }) {
+    _flags.add(_Flag(name, abbr, help, defaultsTo));
+  }
+
+  ArgResults parse(List<String> args) {
+    var values = <String, dynamic>{};
+
+    // Set defaults
+    for (var opt in _options) {
+      values[opt.name] = opt.defaultsTo;
+    }
+    for (var flag in _flags) {
+      values[flag.name] = flag.defaultsTo;
+    }
+
+    var i = 0;
+    while (i < args.length) {
+      var arg = args[i];
+      var matched = false;
+
+      // Check options
+      for (var opt in _options) {
+        if (arg == '--${opt.name}' || (opt.abbr != null && arg == '-${opt.abbr}')) {
+          if (i + 1 >= args.length) {
+            throw FormatException('Missing value for $arg');
+          }
+          values[opt.name] = args[++i];
+          matched = true;
+          break;
+        }
+      }
+
+      // Check flags
+      if (!matched) {
+        for (var flag in _flags) {
+          if (arg == '--${flag.name}' || (flag.abbr != null && arg == '-${flag.abbr}')) {
+            values[flag.name] = true;
+            matched = true;
+            break;
+          }
+          if (arg == '--no-${flag.name}') {
+            values[flag.name] = false;
+            matched = true;
+            break;
+          }
+        }
+      }
+
+      if (!matched) {
+        throw FormatException('Unknown argument: $arg');
+      }
+      i++;
+    }
+
+    return ArgResults(values);
+  }
+
+  String get usage {
+    var buf = StringBuffer();
+    for (var opt in _options) {
+      var abbr = opt.abbr != null ? '-${opt.abbr}, ' : '    ';
+      buf.writeln('  $abbr--${opt.name.padRight(16)} ${opt.help ?? ''}'
+          '${opt.defaultsTo != null ? " (default: ${opt.defaultsTo})" : ""}');
+    }
+    for (var flag in _flags) {
+      var abbr = flag.abbr != null ? '-${flag.abbr}, ' : '    ';
+      buf.writeln('  $abbr--${flag.name.padRight(16)} ${flag.help ?? ''}');
+    }
+    return buf.toString();
   }
 }
 
+class ArgResults {
+  final Map<String, dynamic> _values;
+  ArgResults(this._values);
+  dynamic operator [](String key) => _values[key];
+}
+
+class _Option {
+  final String name;
+  final String? abbr;
+  final String? help;
+  final String? defaultsTo;
+  _Option(this.name, this.abbr, this.help, this.defaultsTo);
+}
+
+class _Flag {
+  final String name;
+  final String? abbr;
+  final String? help;
+  final bool defaultsTo;
+  _Flag(this.name, this.abbr, this.help, this.defaultsTo);
+}

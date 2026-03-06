@@ -1,126 +1,207 @@
+import 'dart:async';
 import 'dart:io';
-import 'package:args/args.dart';
-import 'package:at_client/at_client.dart';
-import 'package:at_cli_commons/at_cli_commons.dart';
-import 'package:noports_core/sshnpd.dart';
-import 'package:uuid/uuid.dart';
 
+/// Default USBIP port for USB data stream over the SSH tunnel.
+const int defaultUsbPort = 3240;
+
+/// Windows Virtual USB Hub — TCP Server
+///
+/// Listens on 127.0.0.1:3240 for incoming connections from the Mac client
+/// (arriving via the pre-existing SSH tunnel). Received USB data packets
+/// are forwarded to the local USBIP virtual driver.
+///
+/// The SSH tunnel must already be running with:
+///   sshnpd [args...] (or equivalent)
+/// and the remote client must have:
+///   -L 3240:127.0.0.1:3240
 Future<void> main(List<String> args) async {
+  // --- Parse CLI options ---
+  var parser = _ArgParser()
+    ..addOption(
+      'port',
+      abbr: 'p',
+      help: 'Local TCP port to listen on (default: $defaultUsbPort)',
+      defaultsTo: '$defaultUsbPort',
+    )
+    ..addFlag(
+      'verbose',
+      abbr: 'v',
+      help: 'Enable verbose logging',
+      defaultsTo: false,
+    )
+    ..addFlag('help', abbr: 'h', help: 'Show this help', defaultsTo: false);
+
+  _ArgResults results;
   try {
-    var parser = CLIBase.createArgsParser(namespace: 'usbovernetwork')
-      ..addOption(
-        'mac-atsign',
-        abbr: 'm',
-        help: 'The atSign of the Mac USB Forwarder',
-      );
-
-    ArgResults results;
-    try {
-      results = parser.parse(args);
-    } catch (e) {
-      print('Error parsing arguments: $e');
-      if (Platform.isWindows && e.toString().contains('atsign')) {
-        print(
-          '\n💡 Hint: If using PowerShell, you MUST wrap your atSigns in quotes (e.g., "@alice"). PowerShell treats unquoted @ as an array operator.\n',
-        );
-      }
-      print(parser.usage);
-      exit(1);
-    }
-
-    if (results['help']) {
-      print(parser.usage);
-      exit(0);
-    }
-
-    var atSign = results['atsign'] as String?;
-    var macAtSign = results['mac-atsign'] as String?;
-    var namespace = results['namespace'] as String;
-    // var isVerbose = results['verbose'] as bool; // Handled by CLIBase
-
-    var isVerbose = results['verbose'] as bool? ?? false;
-
-    if (atSign == null || macAtSign == null) {
-      print('Error: Both --atsign and --mac-atsign are required.');
-      if (Platform.isWindows) {
-        print(
-          '\n💡 Hint: If using PowerShell, you MUST wrap your atSigns in quotes (e.g., "@alice"). PowerShell treats unquoted @ as an array operator.\n',
-        );
-      }
-      print(parser.usage);
-      exit(1);
-    }
-
-    var sessionId = Uuid().v4();
-    var storageDir = Directory.systemTemp
-        .createTempSync('win_usb_$sessionId')
-        .path;
-
-    AtClientPreference prefs = AtClientPreference()
-      ..hiveStoragePath = storageDir
-      ..commitLogPath = storageDir
-      ..isLocalStoreRequired = true
-      ..rootDomain = 'root.atsign.org';
-
-    print('Starting Windows Virtual USB Hub for AtSign: $atSign...');
-
-    CLIBase cliBase = await CLIBase.fromCommandLineArgs(
-      args,
-      parser: parser,
-      namespace: namespace,
-    );
-    var atClient = cliBase.atClient;
-    print('✅ Authenticated successfully as ${atClient.getCurrentAtSign()}');
-
-    print('🎧 Starting SSHNPD daemon on Windows side for rendezvous...');
-    List<String> daemonArgs = [
-      '-a', atSign,
-      '-m', macAtSign, // Manager atSign that can request tunnels
-      '-d', 'usbh', // Device name matches the Npt client request
-    ];
-
-    if (isVerbose) {
-      daemonArgs.add('-v');
-    }
-
-    var sshnpd = await Sshnpd.fromCommandLineArgs(
-      daemonArgs,
-      atClient: atClient,
-      version: '1.0.0',
-    );
-    await sshnpd.init();
-    await sshnpd
-        .run(); // Starts listening to notification requests from Mac Npt client
-
-    print('✅ Daemon running to handle NAT-punching NPT rendezvous requests...');
-
-    print('🚀 Setting up Local Virtual Hub listener on port 3240...');
-    var hubSocket = await ServerSocket.bind('127.0.0.1', 3240);
-    print(
-      '✅ Hub Listening on ${hubSocket.address.address}:${hubSocket.port} for proxy traffic',
-    );
-
-    hubSocket.listen((client) {
-      print(
-        '🔗 TCP connection established from Virtual Port (via Rendezvous tunnel)...',
-      );
-      client.listen(
-        (data) {
-          var packetInfo = String.fromCharCodes(data).trim();
-          print('⬇️ Packet RX: $packetInfo');
-          // Simulated Injection into Hub Driver
-        },
-        onDone: () {
-          print('🔴 Virtual Port connection closed.');
-        },
-        onError: (e) {
-          print('❌ Error on connection: $e');
-        },
-      );
-    });
-  } catch (e, stacktrace) {
-    print('Failed to start Windows Virtual USB Hub: $e');
-    print(stacktrace);
+    results = parser.parse(args);
+  } catch (e) {
+    print('Error parsing arguments: $e');
+    print(parser.usage);
     exit(1);
   }
+
+  if (results['help'] as bool) {
+    print('Windows Virtual USB Hub — TCP server for USB data stream.\n');
+    print('Usage: dart run bin/windows_virtual_usb.dart [options]\n');
+    print(parser.usage);
+    print(
+      '\nMake sure your SSH tunnel is already running.\n'
+      'This server listens on 127.0.0.1:$defaultUsbPort and expects\n'
+      'the Mac client to connect via the tunnel.',
+    );
+    exit(0);
+  }
+
+  var port = int.tryParse(results['port'] as String) ?? defaultUsbPort;
+  var verbose = results['verbose'] as bool;
+
+  // --- Start TCP server ---
+  print('🚀 Démarrage du Windows Virtual USB Hub...');
+
+  ServerSocket server;
+  try {
+    server = await ServerSocket.bind('127.0.0.1', port);
+  } on SocketException catch (e) {
+    print(
+      '\n❌ Erreur : Impossible d\'écouter sur 127.0.0.1:$port.\n'
+      'Le port est peut-être déjà utilisé.\n'
+      '\nDétail : $e',
+    );
+    exit(1);
+  }
+
+  print('✅ Serveur TCP en écoute sur 127.0.0.1:$port');
+  print('⏳ En attente de connexion du client Mac (via tunnel SSH)...');
+
+  server.listen((Socket client) {
+    var clientAddr = '${client.remoteAddress.address}:${client.remotePort}';
+    print('🔗 Connexion acceptée depuis $clientAddr');
+
+    var packetCount = 0;
+
+    client.listen(
+      (data) {
+        packetCount++;
+        var payload = String.fromCharCodes(data).trim();
+
+        if (verbose) {
+          print('⬇️ [#$packetCount] RX: $payload');
+        }
+
+        // TODO: Injecter les données dans le driver USBIP virtuel Windows
+        // usbipDriver.write(data);
+
+        // Echo acknowledgement back to Mac client
+        try {
+          client.write('ACK_$packetCount\n');
+        } catch (e) {
+          print('⚠️ Erreur envoi ACK : $e');
+        }
+      },
+      onError: (e) {
+        print('❌ Erreur sur la connexion $clientAddr : $e');
+      },
+      onDone: () {
+        print('🔴 Client $clientAddr déconnecté. ($packetCount paquets reçus)');
+        client.close();
+      },
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Minimal arg parser (zero dependencies)
+// ---------------------------------------------------------------------------
+
+class _ArgParser {
+  final List<_Option> _options = [];
+  final List<_Flag> _flags = [];
+
+  void addOption(String name, {String? abbr, String? help, String? defaultsTo}) {
+    _options.add(_Option(name, abbr, help, defaultsTo));
+  }
+
+  void addFlag(String name, {String? abbr, String? help, bool defaultsTo = false}) {
+    _flags.add(_Flag(name, abbr, help, defaultsTo));
+  }
+
+  _ArgResults parse(List<String> args) {
+    var values = <String, dynamic>{};
+    for (var opt in _options) {
+      values[opt.name] = opt.defaultsTo;
+    }
+    for (var flag in _flags) {
+      values[flag.name] = flag.defaultsTo;
+    }
+
+    var i = 0;
+    while (i < args.length) {
+      var arg = args[i];
+      var matched = false;
+
+      for (var opt in _options) {
+        if (arg == '--${opt.name}' || (opt.abbr != null && arg == '-${opt.abbr}')) {
+          if (i + 1 >= args.length) throw FormatException('Missing value for $arg');
+          values[opt.name] = args[++i];
+          matched = true;
+          break;
+        }
+      }
+
+      if (!matched) {
+        for (var flag in _flags) {
+          if (arg == '--${flag.name}' || (flag.abbr != null && arg == '-${flag.abbr}')) {
+            values[flag.name] = true;
+            matched = true;
+            break;
+          }
+          if (arg == '--no-${flag.name}') {
+            values[flag.name] = false;
+            matched = true;
+            break;
+          }
+        }
+      }
+
+      if (!matched) throw FormatException('Unknown argument: $arg');
+      i++;
+    }
+    return _ArgResults(values);
+  }
+
+  String get usage {
+    var buf = StringBuffer();
+    for (var opt in _options) {
+      var a = opt.abbr != null ? '-${opt.abbr}, ' : '    ';
+      buf.writeln('  $a--${opt.name.padRight(16)} ${opt.help ?? ""}'
+          '${opt.defaultsTo != null ? " (default: ${opt.defaultsTo})" : ""}');
+    }
+    for (var flag in _flags) {
+      var a = flag.abbr != null ? '-${flag.abbr}, ' : '    ';
+      buf.writeln('  $a--${flag.name.padRight(16)} ${flag.help ?? ""}');
+    }
+    return buf.toString();
+  }
+}
+
+class _ArgResults {
+  final Map<String, dynamic> _values;
+  _ArgResults(this._values);
+  dynamic operator [](String key) => _values[key];
+}
+
+class _Option {
+  final String name;
+  final String? abbr;
+  final String? help;
+  final String? defaultsTo;
+  _Option(this.name, this.abbr, this.help, this.defaultsTo);
+}
+
+class _Flag {
+  final String name;
+  final String? abbr;
+  final String? help;
+  final bool defaultsTo;
+  _Flag(this.name, this.abbr, this.help, this.defaultsTo);
 }
