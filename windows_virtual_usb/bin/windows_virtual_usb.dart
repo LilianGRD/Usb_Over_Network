@@ -193,7 +193,9 @@ Future<void> _handleClient(
         if (reader.available < fullSize) return;
 
         var fullBytes = reader.tryRead(fullSize)!;
-        var (dev, _) = UsbipDevice.deserialize(fullBytes, opCommonSize);
+        // hasInterfaces: false — OP_REP_IMPORT does NOT include interface
+        // descriptors after the device block (unlike OP_REP_DEVLIST).
+        var (dev, _) = UsbipDevice.deserialize(fullBytes, opCommonSize, false);
 
         if (verbose) {
           print(

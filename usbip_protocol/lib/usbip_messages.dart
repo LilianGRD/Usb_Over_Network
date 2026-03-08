@@ -108,8 +108,18 @@ class UsbipDevice {
   }
 
   /// Deserialize a device info block from [bytes] starting at [start].
+  ///
+  /// When [hasInterfaces] is `true` (the default, used for OP_REP_DEVLIST),
+  /// the interface descriptors that follow the 312-byte device block are read.
+  /// Set [hasInterfaces] to `false` for OP_REP_IMPORT, which does NOT include
+  /// interface descriptors after the device block per the USB/IP spec.
+  ///
   /// Returns the device and the number of bytes consumed.
-  static (UsbipDevice, int) deserialize(Uint8List bytes, [int start = 0]) {
+  static (UsbipDevice, int) deserialize(
+    Uint8List bytes, [
+    int start = 0,
+    bool hasInterfaces = true,
+  ]) {
     var data = ByteData.sublistView(bytes);
     var offset = start;
 
@@ -137,13 +147,17 @@ class UsbipDevice {
     );
     offset += 24; // 6*4 + 3*2 + 6*1 = 24 bytes of numeric fields
 
-    for (var i = 0; i < dev.bNumInterfaces; i++) {
-      dev.interfaces.add(UsbipInterface(
-        bInterfaceClass: data.getUint8(offset),
-        bInterfaceSubClass: data.getUint8(offset + 1),
-        bInterfaceProtocol: data.getUint8(offset + 2),
-      ));
-      offset += interfaceInfoSize;
+    // Interface descriptors are only present in OP_REP_DEVLIST,
+    // NOT in OP_REP_IMPORT (per USB/IP protocol spec).
+    if (hasInterfaces) {
+      for (var i = 0; i < dev.bNumInterfaces; i++) {
+        dev.interfaces.add(UsbipInterface(
+          bInterfaceClass: data.getUint8(offset),
+          bInterfaceSubClass: data.getUint8(offset + 1),
+          bInterfaceProtocol: data.getUint8(offset + 2),
+        ));
+        offset += interfaceInfoSize;
+      }
     }
 
     return (dev, offset - start);
