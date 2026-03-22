@@ -19,10 +19,9 @@ void printDeviceList(List<UsbDeviceInfo> devices) {
   print('${'─' * 72}');
   for (var i = 0; i < devices.length; i++) {
     var d = devices[i];
-    var name =
-        d.manufacturer.isNotEmpty || d.product.isNotEmpty
-            ? '${d.manufacturer}${d.manufacturer.isNotEmpty && d.product.isNotEmpty ? ' - ' : ''}${d.product}'
-            : 'Périphérique inconnu';
+    var name = d.manufacturer.isNotEmpty || d.product.isNotEmpty
+        ? '${d.manufacturer}${d.manufacturer.isNotEmpty && d.product.isNotEmpty ? ' - ' : ''}${d.product}'
+        : 'Périphérique inconnu';
     var vid = d.vendorId.toRadixString(16).padLeft(4, '0');
     var pid = d.productId.toRadixString(16).padLeft(4, '0');
     print('  [${i + 1}] $name');
@@ -35,7 +34,9 @@ void printDeviceList(List<UsbDeviceInfo> devices) {
 /// Returns the 0-based index, or -1 if the user wants to quit.
 int promptDeviceSelection(int deviceCount) {
   while (true) {
-    stdout.write('Entrez le numéro du périphérique à partager (q pour quitter) : ');
+    stdout.write(
+      'Entrez le numéro du périphérique à partager (q pour quitter) : ',
+    );
     var input = stdin.readLineSync()?.trim();
 
     if (input == null || input.toLowerCase() == 'q') {
@@ -81,7 +82,9 @@ void printStatus(String message) {
 bool promptRetryAfterAccessDenied(String deviceName) {
   print('\n⛔ Accès refusé au périphérique "$deviceName".');
   print('   macOS protège certains périphériques (HID, clavier, trackpad).');
-  print('   Choisissez un autre périphérique ou lancez avec sudo (non recommandé).\n');
+  print(
+    '   Choisissez un autre périphérique ou lancez avec sudo (non recommandé).\n',
+  );
   stdout.write('Voulez-vous choisir un autre périphérique ? (o/n) : ');
   var input = stdin.readLineSync()?.trim().toLowerCase();
   return input == 'o' || input == 'oui' || input == 'y' || input == 'yes';

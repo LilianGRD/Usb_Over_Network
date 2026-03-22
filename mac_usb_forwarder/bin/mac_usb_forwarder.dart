@@ -181,248 +181,185 @@ Future<void> main(List<String> args) async {
       interfaces: [UsbipInterface()],
     );
 
-    // --- Connect to TCP tunnel ---
-    printStatus('\n🔍 Connexion au tunnel local sur 127.0.0.1:$port...');
+    // --- Start TCP Server ---
+    printStatus('\n🔍 Démarrage du serveur USB/IP sur 127.0.0.1:$port...');
 
-    Socket socket;
+    ServerSocket serverSocket;
     try {
-      socket = await Socket.connect(
-        '127.0.0.1',
-        port,
-        timeout: Duration(seconds: 5),
-      );
-    } on SocketException catch (e) {
+      serverSocket = await ServerSocket.bind('127.0.0.1', port);
+    } catch (e) {
       printError(
-        'Impossible de se connecter au port USB local.\n'
-        '   Vérifiez que votre tunnel SSH est bien lancé avec l\'option :\n'
-        '   -L $port:127.0.0.1:$port\n'
-        '\n   Détail : $e',
-      );
-      usb.dispose();
-      exit(1);
-    } on TimeoutException {
-      printError(
-        'Timeout lors de la connexion au tunnel.\n'
-        '   Vérifiez que votre tunnel SSH est bien lancé avec l\'option :\n'
-        '   -L $port:127.0.0.1:$port',
+        'Impossible de démarrer le serveur sur le port $port.\n'
+        '   Détail : $e',
       );
       usb.dispose();
       exit(1);
     }
 
-    printStatus('✅ Connecté au tunnel local 127.0.0.1:$port');
+    printStatus('✅ Serveur en écoute sur 127.0.0.1:$port');
+    printStatus(
+      '   Attente de connexion (usbip.exe attach -r 127.0.0.1 -b 1-1)...',
+    );
 
-    // --- Wait for USB/IP handshake from Windows server ---
-    printStatus('⏳ En attente du handshake USB/IP...');
+    Socket? activeClient;
+    Timer? urbTimer;
+    UsbipStreamReader? activeStreamReader;
 
-    var streamReader = UsbipStreamReader();
-    var handshakeCompleter = Completer<bool>();
-    var handshakeDone = false;
+    await for (var clientSocket in serverSocket) {
+      if (verbose) {
+        printStatus(
+          '\n🔗 Nouvelle connexion de ${clientSocket.remoteAddress.address}:${clientSocket.remotePort}',
+        );
+      }
 
-    // Listen for incoming data and handle handshake + URB responses
-    var socketSub = socket.listen(
-      (data) {
-        streamReader.addData(data);
+      var streamReader = UsbipStreamReader();
+      var isUrbMode = false;
 
-        if (!handshakeDone) {
-          _handleHandshake(streamReader, socket, usbipDev, verbose);
-          // After IMPORT reply is sent, handshake is complete
-          // We detect this by the server sending CMD_SUBMIT requests
-          // Actually in our architecture, the Mac is the "server" exporting the device
-          // and Windows is the "client" that imports it
-          // So we need to handle OP_REQ_DEVLIST and OP_REQ_IMPORT
+      clientSocket.listen(
+        (data) {
+          streamReader.addData(data);
 
-          // Check if we've handled all handshake messages
-          // The handshake is done when we receive and process the IMPORT request
-          if (!handshakeCompleter.isCompleted) {
-            // Try to see if we have CMD_SUBMIT headers (URB phase)
-            var peek = streamReader.peek(4);
-            if (peek != null) {
-              var cmd = ByteData.sublistView(peek).getUint32(0, Endian.big);
-              if (cmd == usbipCmdSubmit || cmd == usbipCmdUnlink) {
-                handshakeDone = true;
-                handshakeCompleter.complete(true);
+          if (!isUrbMode) {
+            // Handshake phase
+            while (streamReader.available >= opCommonSize) {
+              var headerBytes = streamReader.peek(opCommonSize)!;
+              var headerData = ByteData.sublistView(headerBytes);
+              var (_, command, _) = readOpCommon(headerData);
+
+              if (command == opReqDevlist) {
+                streamReader.tryRead(opCommonSize);
+                if (verbose) print('⬅️ OP_REQ_DEVLIST reçu');
+                clientSocket.add(serializeRepDevlist([usbipDev]));
+                if (verbose) print('➡️ OP_REP_DEVLIST envoyé');
+                // The client native will close the connection after list
+                clientSocket.close();
+                break;
+              } else if (command == opReqImport) {
+                if (streamReader.available < opCommonSize + busidSize) return;
+                var importBytes = streamReader.tryRead(
+                  opCommonSize + busidSize,
+                )!;
+                var busid = parseReqImportBusid(importBytes);
+                if (verbose) print('⬅️ OP_REQ_IMPORT reçu (busid: $busid)');
+
+                isUrbMode = true;
+
+                if (activeClient != null && activeClient != clientSocket) {
+                  activeClient?.close();
+                }
+                activeClient = clientSocket;
+                activeStreamReader = streamReader;
+
+                clientSocket.add(serializeRepImport(usbipDev));
+                if (verbose) print('➡️ OP_REP_IMPORT envoyé (success)');
+
+                printStatus(
+                  '\n🚀 Transfert USB/IP actif !\n'
+                  '   ${selectedDevice!.manufacturer} ${selectedDevice.product} → 127.0.0.1:$port\n'
+                  '   Ctrl+C pour arrêter le serveur.\n',
+                );
+
+                var errorCount = 0;
+                const maxConsecutiveErrors = 10;
+
+                urbTimer?.cancel();
+                urbTimer = Timer.periodic(Duration(milliseconds: 5), (_) {
+                  var activeSocket = activeClient;
+                  var reader = activeStreamReader;
+                  if (activeSocket == null || reader == null) return;
+
+                  // URB submission parsing
+                  while (reader.available >= usbipHeaderSize) {
+                    var hBytes = reader.peek(usbipHeaderSize);
+                    if (hBytes == null) break;
+
+                    var hData = ByteData.sublistView(hBytes);
+                    var cmd = hData.getUint32(0, Endian.big);
+
+                    if (cmd == usbipCmdSubmit) {
+                      var direction = hData.getUint32(12, Endian.big);
+
+                      var transferBufferLength = hData.getUint32(
+                        0x18,
+                        Endian.big,
+                      );
+
+                      var totalLen =
+                          usbipHeaderSize +
+                          (direction == usbipDirOut ? transferBufferLength : 0);
+
+                      if (reader.available < totalLen) break;
+                      var msgBytes = reader.tryRead(totalLen)!;
+                      var submit = CmdSubmit.deserialize(msgBytes);
+
+                      if (verbose) {
+                        print(
+                          '⬅️ CMD_SUBMIT seq=${submit.header.seqnum} '
+                          'ep=${submit.header.ep} dir=${submit.header.direction == usbipDirIn ? "IN" : "OUT"} '
+                          'len=${submit.transferBufferLength}',
+                        );
+                      }
+
+                      _handleCmdSubmit(
+                        submit,
+                        usb,
+                        readEp,
+                        writeEp,
+                        activeSocket,
+                        verbose,
+                      );
+                      errorCount = 0;
+                    } else if (cmd == usbipCmdUnlink) {
+                      if (reader.available < usbipHeaderSize) break;
+                      var msgBytes = reader.tryRead(usbipHeaderSize)!;
+                      var unlinkData = ByteData.sublistView(msgBytes);
+                      var reqSeqnum = unlinkData.getUint32(4, Endian.big);
+                      var unlinkSeqnum = unlinkData.getUint32(0x14, Endian.big);
+
+                      if (verbose)
+                        print(
+                          '⬅️ CMD_UNLINK seq=$reqSeqnum unlink=$unlinkSeqnum',
+                        );
+
+                      activeSocket.add(
+                        serializeRetUnlink(reqSeqnum, econnreset),
+                      );
+                    } else {
+                      if (verbose)
+                        print(
+                          '⚠️ Commande inconnue: 0x${cmd.toRadixString(16)}',
+                        );
+                      reader.tryRead(4);
+                    }
+                  }
+                });
+              } else {
+                // Unknown command, stop handshake
+                break;
               }
             }
           }
-        }
-      },
-      onError: (e) {
-        print('⚠️ Erreur socket : $e');
-        if (!handshakeCompleter.isCompleted) {
-          handshakeCompleter.complete(false);
-        }
-      },
-      onDone: () {
-        print('\n🔴 Tunnel déconnecté.');
-        if (!handshakeCompleter.isCompleted) {
-          handshakeCompleter.complete(false);
-        }
-      },
-    );
-
-    // Wait for handshake (max 30 seconds)
-    var handshakeOk = await handshakeCompleter.future.timeout(
-      Duration(seconds: 30),
-      onTimeout: () => false,
-    );
-
-    if (!handshakeOk) {
-      printError('Handshake USB/IP échoué ou timeout.');
-      socket.destroy();
-      usb.dispose();
-      exit(1);
+        },
+        onError: (e) {
+          if (verbose) print('⚠️ Erreur socket client : $e');
+        },
+        onDone: () {
+          if (verbose) print('🔴 Client déconnecté.');
+          if (clientSocket == activeClient) {
+            urbTimer?.cancel();
+            urbTimer = null;
+            activeClient = null;
+            activeStreamReader = null;
+            printStatus('\n⏳ Serveur en attente de nouvelle connexion...');
+          }
+        },
+      );
     }
-
-    printStatus(
-      '\n🚀 Transfert USB/IP actif !\n'
-      '   ${selectedDevice.manufacturer} ${selectedDevice.product} → 127.0.0.1:$port\n'
-      '   Ctrl+C pour arrêter.\n',
-    );
-
-    // --- URB forwarding loop ---
-    // Now we process CMD_SUBMIT from the Windows vhci driver
-    // and respond with RET_SUBMIT containing USB data
-
-    late Timer timer;
-    var errorCount = 0;
-    const maxConsecutiveErrors = 10;
-
-    timer = Timer.periodic(Duration(milliseconds: 5), (_) {
-      // Process any pending CMD_SUBMIT requests from the vhci driver
-      while (streamReader.available >= usbipHeaderSize) {
-        var headerBytes = streamReader.peek(usbipHeaderSize);
-        if (headerBytes == null) break;
-
-        var headerData = ByteData.sublistView(headerBytes);
-        var cmd = headerData.getUint32(0, Endian.big);
-
-        if (cmd == usbipCmdSubmit) {
-          var direction = headerData.getUint32(12, Endian.big);
-          var transferBufferLength = headerData.getUint32(0x18, Endian.big);
-
-          // For OUT: header + transfer_buffer
-          var totalLen = usbipHeaderSize +
-              (direction == usbipDirOut ? transferBufferLength : 0);
-
-          if (streamReader.available < totalLen) break;
-          var msgBytes = streamReader.tryRead(totalLen)!;
-          var submit = CmdSubmit.deserialize(msgBytes);
-
-          if (verbose) {
-            print(
-              '⬅️ CMD_SUBMIT seq=${submit.header.seqnum} '
-              'ep=${submit.header.ep} dir=${submit.header.direction == usbipDirIn ? "IN" : "OUT"} '
-              'len=${submit.transferBufferLength}',
-            );
-          }
-
-          // Handle the URB
-          _handleCmdSubmit(submit, usb, readEp, writeEp, socket, verbose);
-          errorCount = 0;
-        } else if (cmd == usbipCmdUnlink) {
-          if (streamReader.available < usbipHeaderSize) break;
-          var msgBytes = streamReader.tryRead(usbipHeaderSize)!;
-          var unlinkData = ByteData.sublistView(msgBytes);
-          var reqSeqnum = unlinkData.getUint32(4, Endian.big);
-          var unlinkSeqnum = unlinkData.getUint32(0x14, Endian.big);
-
-          if (verbose) {
-            print('⬅️ CMD_UNLINK seq=$reqSeqnum unlink=$unlinkSeqnum');
-          }
-
-          // Reply with RET_UNLINK
-          var reply = serializeRetUnlink(reqSeqnum, econnreset);
-          socket.add(reply);
-        } else {
-          // Unknown command — skip 4 bytes and try again
-          if (verbose) {
-            print('⚠️ Unknown command: 0x${cmd.toRadixString(16)}');
-          }
-          streamReader.tryRead(4);
-        }
-      }
-
-      // Also do a proactive USB read and store data for IN responses
-      try {
-        var data = usb.readEndpoint(
-          readEp.address,
-          maxLength: readEp.maxPacketSize,
-          timeoutMs: 1,
-        );
-        if (data.isNotEmpty && verbose) {
-          print('📦 USB buffer: ${data.length} bytes ready');
-        }
-      } on UsbException catch (e) {
-        if (e.isNoDevice) {
-          print('\n🔴 Périphérique USB déconnecté.');
-          timer.cancel();
-          socket.close();
-          usb.dispose();
-          exit(0);
-        }
-        errorCount++;
-        if (errorCount >= maxConsecutiveErrors) {
-          print('\n🔴 Trop d\'erreurs USB consécutives: $e');
-          timer.cancel();
-          socket.close();
-          usb.dispose();
-          exit(1);
-        }
-      }
-    });
-
-    // Keep alive
-    await socketSub.asFuture();
-    timer.cancel();
-    usb.closeDevice();
-    usb.dispose();
   } catch (e, stack) {
     print('❌ Erreur fatale : $e');
     if (verbose) print(stack);
     usb.dispose();
     exit(1);
-  }
-}
-
-/// Handle USB/IP handshake messages (OP_REQ_DEVLIST, OP_REQ_IMPORT).
-void _handleHandshake(
-  UsbipStreamReader reader,
-  Socket socket,
-  UsbipDevice device,
-  bool verbose,
-) {
-  while (reader.available >= opCommonSize) {
-    var headerBytes = reader.peek(opCommonSize);
-    if (headerBytes == null) return;
-
-    var headerData = ByteData.sublistView(headerBytes);
-    var (_, command, _) = readOpCommon(headerData);
-
-    if (command == opReqDevlist) {
-      // Consume the header
-      reader.tryRead(opCommonSize);
-      if (verbose) print('⬅️ OP_REQ_DEVLIST reçu');
-
-      // Reply with our device
-      var reply = serializeRepDevlist([device]);
-      socket.add(reply);
-      if (verbose) print('➡️ OP_REP_DEVLIST envoyé (${device.idVendor.toRadixString(16)}:${device.idProduct.toRadixString(16)})');
-    } else if (command == opReqImport) {
-      // Need 8 + 32 bytes
-      if (reader.available < opCommonSize + busidSize) return;
-      var importBytes = reader.tryRead(opCommonSize + busidSize)!;
-      var busid = parseReqImportBusid(importBytes);
-      if (verbose) print('⬅️ OP_REQ_IMPORT reçu (busid: $busid)');
-
-      // Reply with success
-      var reply = serializeRepImport(device);
-      socket.add(reply);
-      if (verbose) print('➡️ OP_REP_IMPORT envoyé (success)');
-    } else {
-      // Not a handshake command — stop processing handshake
-      return;
-    }
   }
 }
 
@@ -437,14 +374,84 @@ void _handleCmdSubmit(
 ) {
   var header = submit.header;
 
+  // --- Endpoint 0 (Control Transfer) ---
+  if (header.ep == 0) {
+    if (submit.setup.length < 8) {
+      if (verbose) print('⚠️ Missing setup packet for Control Transfer');
+      return;
+    }
+
+    var setupData = ByteData.sublistView(submit.setup);
+    var bmRequestType = setupData.getUint8(0);
+    var bRequest = setupData.getUint8(1);
+    var wValue = setupData.getUint16(2, Endian.little);
+    var wIndex = setupData.getUint16(4, Endian.little);
+    var wLength = setupData.getUint16(6, Endian.little);
+
+    if (verbose) {
+      print(
+        '🔧 Control Transfer: bmRequestType=0x${bmRequestType.toRadixString(16)}, '
+        'bRequest=0x${bRequest.toRadixString(16)}, wValue=0x${wValue.toRadixString(16)}, '
+        'wLength=$wLength',
+      );
+    }
+
+    Uint8List resultData;
+    int status = 0;
+
+    try {
+      resultData = usb.controlTransfer(
+        requestType: bmRequestType,
+        request: bRequest,
+        value: wValue,
+        index: wIndex,
+        data: header.direction == usbipDirOut ? submit.transferBuffer : null,
+        length: wLength,
+        timeoutMs: 1000,
+      );
+    } on UsbException catch (e) {
+      resultData = Uint8List(0);
+      status = -1;
+      if (verbose) print('⚠️ Control Transfer error: $e');
+    }
+
+    var retHeader = UsbipHeaderBasic(
+      command: usbipRetSubmit,
+      seqnum: header.seqnum,
+      devid: 0,
+      direction: header.direction,
+      ep: 0,
+    );
+
+    var ret = RetSubmit(
+      header: retHeader,
+      status: status,
+      actualLength: resultData.length,
+      transferBuffer: header.direction == usbipDirIn ? resultData : null,
+    );
+
+    socket.add(ret.serialize());
+
+    if (verbose) {
+      print(
+        '➡️ RET_SUBMIT (Control) seq=${header.seqnum} status=$status len=${resultData.length}',
+      );
+    }
+
+    return;
+  }
+
+  // --- Bulk / Interrupt Transfers ---
   if (header.direction == usbipDirIn) {
     // IN transfer: read from USB device
     Uint8List usbData;
     int status = 0;
 
+    var epAddress = header.ep | 0x80;
+
     try {
       usbData = usb.readEndpoint(
-        readEp.address,
+        epAddress,
         maxLength: submit.transferBufferLength > 0
             ? submit.transferBufferLength
             : readEp.maxPacketSize,
@@ -452,7 +459,7 @@ void _handleCmdSubmit(
       );
     } on UsbException catch (e) {
       usbData = Uint8List(0);
-      status = -1; // Generic error
+      status = -32; // -EPIPE (STALL)
       if (verbose) print('⚠️ USB read error for URB seq=${header.seqnum}: $e');
     }
 
@@ -489,16 +496,18 @@ void _handleCmdSubmit(
     int status = 0;
     int actualLength = 0;
 
-    if (writeEp != null && submit.transferBuffer.isNotEmpty) {
+    var epAddress = header.ep; // OUT => no 0x80 bit
+    if (submit.transferBuffer.isNotEmpty) {
       try {
         actualLength = usb.writeEndpoint(
-          writeEp.address,
+          epAddress,
           submit.transferBuffer,
           timeoutMs: 100,
         );
       } on UsbException catch (e) {
-        status = -1;
-        if (verbose) print('⚠️ USB write error for URB seq=${header.seqnum}: $e');
+        status = -32; // -EPIPE (STALL)
+        if (verbose)
+          print('⚠️ USB write error for URB seq=${header.seqnum}: $e');
       }
     } else {
       actualLength = submit.transferBufferLength;

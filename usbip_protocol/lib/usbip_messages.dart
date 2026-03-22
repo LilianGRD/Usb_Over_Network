@@ -50,9 +50,12 @@ class UsbipDevice {
     List<UsbipInterface>? interfaces,
   }) : interfaces = interfaces ?? [UsbipInterface()];
 
-  /// Serialize this device info into the wire format (312 bytes + 4*numInterfaces).
-  Uint8List serialize() {
-    var totalSize = deviceInfoSize + bNumInterfaces * interfaceInfoSize;
+  /// Serialize this device info into the wire format.
+  /// If [includeInterfaces] is false, omit the interface descriptors (used for OP_REP_IMPORT).
+  Uint8List serialize([bool includeInterfaces = true]) {
+    var totalSize =
+        deviceInfoSize +
+        (includeInterfaces ? bNumInterfaces * interfaceInfoSize : 0);
     var data = ByteData(totalSize);
     var offset = 0;
 
@@ -97,11 +100,13 @@ class UsbipDevice {
     data.setUint8(offset++, bNumInterfaces);
 
     // Interface descriptors (4 bytes each)
-    for (var iface in interfaces) {
-      data.setUint8(offset++, iface.bInterfaceClass);
-      data.setUint8(offset++, iface.bInterfaceSubClass);
-      data.setUint8(offset++, iface.bInterfaceProtocol);
-      data.setUint8(offset++, 0); // padding
+    if (includeInterfaces) {
+      for (var iface in interfaces) {
+        data.setUint8(offset++, iface.bInterfaceClass);
+        data.setUint8(offset++, iface.bInterfaceSubClass);
+        data.setUint8(offset++, iface.bInterfaceProtocol);
+        data.setUint8(offset++, 0); // padding
+      }
     }
 
     return result;
@@ -151,11 +156,13 @@ class UsbipDevice {
     // NOT in OP_REP_IMPORT (per USB/IP protocol spec).
     if (hasInterfaces) {
       for (var i = 0; i < dev.bNumInterfaces; i++) {
-        dev.interfaces.add(UsbipInterface(
-          bInterfaceClass: data.getUint8(offset),
-          bInterfaceSubClass: data.getUint8(offset + 1),
-          bInterfaceProtocol: data.getUint8(offset + 2),
-        ));
+        dev.interfaces.add(
+          UsbipInterface(
+            bInterfaceClass: data.getUint8(offset),
+            bInterfaceSubClass: data.getUint8(offset + 1),
+            bInterfaceProtocol: data.getUint8(offset + 2),
+          ),
+        );
         offset += interfaceInfoSize;
       }
     }
@@ -265,14 +272,13 @@ Uint8List serializeRepImport(UsbipDevice? device) {
   }
 
   // Success: header + device info (without interface list)
-  var devSize = deviceInfoSize; // No interface info in IMPORT reply
-  var bytes = Uint8List(opCommonSize + devSize);
+  var devBytes = device.serialize(false); // 312 bytes
+  var bytes = Uint8List(opCommonSize + devBytes.length);
   var data = ByteData.sublistView(bytes);
   writeOpCommon(data, 0, opRepImport, statusOk);
 
-  // Write device info (serialize full device, take only 312 bytes)
-  var devBytes = device.serialize();
-  bytes.setRange(opCommonSize, opCommonSize + devSize, devBytes);
+  // Write device info
+  bytes.setRange(opCommonSize, opCommonSize + devBytes.length, devBytes);
 
   return bytes;
 }
@@ -341,13 +347,12 @@ class CmdSubmit {
     this.interval = 0,
     Uint8List? setup,
     Uint8List? transferBuffer,
-  })  : setup = setup ?? Uint8List(8),
-        transferBuffer = transferBuffer ?? Uint8List(0);
+  }) : setup = setup ?? Uint8List(8),
+       transferBuffer = transferBuffer ?? Uint8List(0);
 
   /// Serialize to wire format.
   Uint8List serialize() {
-    var bufLen =
-        header.direction == usbipDirOut ? transferBuffer.length : 0;
+    var bufLen = header.direction == usbipDirOut ? transferBuffer.length : 0;
     var bytes = Uint8List(usbipHeaderSize + bufLen);
     var data = ByteData.sublistView(bytes);
 
@@ -433,8 +438,7 @@ class RetSubmit {
 
   /// Serialize to wire format.
   Uint8List serialize() {
-    var bufLen =
-        header.direction == usbipDirIn ? transferBuffer.length : 0;
+    var bufLen = header.direction == usbipDirIn ? transferBuffer.length : 0;
     var bytes = Uint8List(usbipHeaderSize + bufLen);
     var data = ByteData.sublistView(bytes);
 
@@ -487,7 +491,11 @@ class RetSubmit {
 // ---------------------------------------------------------------------------
 
 /// Serialize a CMD_UNLINK message (48 bytes).
-Uint8List serializeCmdUnlink(int seqnum, int unlinkSeqnum, {int devid = 0x00010001}) {
+Uint8List serializeCmdUnlink(
+  int seqnum,
+  int unlinkSeqnum, {
+  int devid = 0x00010001,
+}) {
   var bytes = Uint8List(usbipHeaderSize);
   var data = ByteData.sublistView(bytes);
   var basic = UsbipHeaderBasic(

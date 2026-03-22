@@ -241,146 +241,144 @@ typedef LibusbExitNative = Void Function(Pointer<LibusbContext>);
 typedef LibusbExitDart = void Function(Pointer<LibusbContext>);
 
 // libusb_get_device_list(ctx, ***list) -> ssize_t
-typedef LibusbGetDeviceListNative = IntPtr Function(
-  Pointer<LibusbContext>,
-  Pointer<Pointer<Pointer<LibusbDevice>>>,
-);
-typedef LibusbGetDeviceListDart = int Function(
-  Pointer<LibusbContext>,
-  Pointer<Pointer<Pointer<LibusbDevice>>>,
-);
+typedef LibusbGetDeviceListNative =
+    IntPtr Function(
+      Pointer<LibusbContext>,
+      Pointer<Pointer<Pointer<LibusbDevice>>>,
+    );
+typedef LibusbGetDeviceListDart =
+    int Function(
+      Pointer<LibusbContext>,
+      Pointer<Pointer<Pointer<LibusbDevice>>>,
+    );
 
 // libusb_free_device_list(**list, unref) -> void
-typedef LibusbFreeDeviceListNative = Void Function(
-  Pointer<Pointer<LibusbDevice>>,
-  Int32,
-);
-typedef LibusbFreeDeviceListDart = void Function(
-  Pointer<Pointer<LibusbDevice>>,
-  int,
-);
+typedef LibusbFreeDeviceListNative =
+    Void Function(Pointer<Pointer<LibusbDevice>>, Int32);
+typedef LibusbFreeDeviceListDart =
+    void Function(Pointer<Pointer<LibusbDevice>>, int);
 
 // libusb_get_device_descriptor(dev, *desc) -> int
-typedef LibusbGetDeviceDescriptorNative = Int32 Function(
-  Pointer<LibusbDevice>,
-  Pointer<LibusbDeviceDescriptor>,
-);
-typedef LibusbGetDeviceDescriptorDart = int Function(
-  Pointer<LibusbDevice>,
-  Pointer<LibusbDeviceDescriptor>,
-);
+typedef LibusbGetDeviceDescriptorNative =
+    Int32 Function(Pointer<LibusbDevice>, Pointer<LibusbDeviceDescriptor>);
+typedef LibusbGetDeviceDescriptorDart =
+    int Function(Pointer<LibusbDevice>, Pointer<LibusbDeviceDescriptor>);
 
 // libusb_open(dev, **handle) -> int
-typedef LibusbOpenNative = Int32 Function(
-  Pointer<LibusbDevice>,
-  Pointer<Pointer<LibusbDeviceHandle>>,
-);
-typedef LibusbOpenDart = int Function(
-  Pointer<LibusbDevice>,
-  Pointer<Pointer<LibusbDeviceHandle>>,
-);
+typedef LibusbOpenNative =
+    Int32 Function(Pointer<LibusbDevice>, Pointer<Pointer<LibusbDeviceHandle>>);
+typedef LibusbOpenDart =
+    int Function(Pointer<LibusbDevice>, Pointer<Pointer<LibusbDeviceHandle>>);
 
 // libusb_close(handle) -> void
 typedef LibusbCloseNative = Void Function(Pointer<LibusbDeviceHandle>);
 typedef LibusbCloseDart = void Function(Pointer<LibusbDeviceHandle>);
 
 // libusb_get_string_descriptor_ascii(handle, index, *data, length) -> int
-typedef LibusbGetStringDescriptorAsciiNative = Int32 Function(
-  Pointer<LibusbDeviceHandle>,
-  Uint8,
-  Pointer<Uint8>,
-  Int32,
-);
-typedef LibusbGetStringDescriptorAsciiDart = int Function(
-  Pointer<LibusbDeviceHandle>,
-  int,
-  Pointer<Uint8>,
-  int,
-);
+typedef LibusbGetStringDescriptorAsciiNative =
+    Int32 Function(Pointer<LibusbDeviceHandle>, Uint8, Pointer<Uint8>, Int32);
+typedef LibusbGetStringDescriptorAsciiDart =
+    int Function(Pointer<LibusbDeviceHandle>, int, Pointer<Uint8>, int);
 
 // libusb_get_active_config_descriptor(dev, **config) -> int
-typedef LibusbGetActiveConfigDescriptorNative = Int32 Function(
-  Pointer<LibusbDevice>,
-  Pointer<Pointer<LibusbConfigDescriptor>>,
-);
-typedef LibusbGetActiveConfigDescriptorDart = int Function(
-  Pointer<LibusbDevice>,
-  Pointer<Pointer<LibusbConfigDescriptor>>,
-);
+typedef LibusbGetActiveConfigDescriptorNative =
+    Int32 Function(
+      Pointer<LibusbDevice>,
+      Pointer<Pointer<LibusbConfigDescriptor>>,
+    );
+typedef LibusbGetActiveConfigDescriptorDart =
+    int Function(
+      Pointer<LibusbDevice>,
+      Pointer<Pointer<LibusbConfigDescriptor>>,
+    );
 
 // libusb_free_config_descriptor(*config) -> void
-typedef LibusbFreeConfigDescriptorNative = Void Function(
-  Pointer<LibusbConfigDescriptor>,
-);
-typedef LibusbFreeConfigDescriptorDart = void Function(
-  Pointer<LibusbConfigDescriptor>,
-);
+typedef LibusbFreeConfigDescriptorNative =
+    Void Function(Pointer<LibusbConfigDescriptor>);
+typedef LibusbFreeConfigDescriptorDart =
+    void Function(Pointer<LibusbConfigDescriptor>);
 
 // libusb_claim_interface(handle, interface_number) -> int
-typedef LibusbClaimInterfaceNative = Int32 Function(
-  Pointer<LibusbDeviceHandle>,
-  Int32,
-);
-typedef LibusbClaimInterfaceDart = int Function(
-  Pointer<LibusbDeviceHandle>,
-  int,
-);
+typedef LibusbClaimInterfaceNative =
+    Int32 Function(Pointer<LibusbDeviceHandle>, Int32);
+typedef LibusbClaimInterfaceDart =
+    int Function(Pointer<LibusbDeviceHandle>, int);
 
 // libusb_release_interface(handle, interface_number) -> int
-typedef LibusbReleaseInterfaceNative = Int32 Function(
-  Pointer<LibusbDeviceHandle>,
-  Int32,
-);
-typedef LibusbReleaseInterfaceDart = int Function(
-  Pointer<LibusbDeviceHandle>,
-  int,
-);
+typedef LibusbReleaseInterfaceNative =
+    Int32 Function(Pointer<LibusbDeviceHandle>, Int32);
+typedef LibusbReleaseInterfaceDart =
+    int Function(Pointer<LibusbDeviceHandle>, int);
 
 // libusb_set_auto_detach_kernel_driver(handle, enable) -> int
-typedef LibusbSetAutoDetachKernelDriverNative = Int32 Function(
-  Pointer<LibusbDeviceHandle>,
-  Int32,
-);
-typedef LibusbSetAutoDetachKernelDriverDart = int Function(
-  Pointer<LibusbDeviceHandle>,
-  int,
-);
+typedef LibusbSetAutoDetachKernelDriverNative =
+    Int32 Function(Pointer<LibusbDeviceHandle>, Int32);
+typedef LibusbSetAutoDetachKernelDriverDart =
+    int Function(Pointer<LibusbDeviceHandle>, int);
+
+// libusb_control_transfer(handle, bmRequestType, bRequest, wValue, wIndex, *data, wLength, timeout) -> int
+typedef LibusbControlTransferNative =
+    Int32 Function(
+      Pointer<LibusbDeviceHandle>,
+      Uint8,
+      Uint8,
+      Uint16,
+      Uint16,
+      Pointer<Uint8>,
+      Uint16,
+      Uint32,
+    );
+typedef LibusbControlTransferDart =
+    int Function(
+      Pointer<LibusbDeviceHandle>,
+      int,
+      int,
+      int,
+      int,
+      Pointer<Uint8>,
+      int,
+      int,
+    );
 
 // libusb_bulk_transfer(handle, endpoint, *data, length, *transferred, timeout) -> int
-typedef LibusbBulkTransferNative = Int32 Function(
-  Pointer<LibusbDeviceHandle>,
-  Uint8,
-  Pointer<Uint8>,
-  Int32,
-  Pointer<Int32>,
-  Uint32,
-);
-typedef LibusbBulkTransferDart = int Function(
-  Pointer<LibusbDeviceHandle>,
-  int,
-  Pointer<Uint8>,
-  int,
-  Pointer<Int32>,
-  int,
-);
+typedef LibusbBulkTransferNative =
+    Int32 Function(
+      Pointer<LibusbDeviceHandle>,
+      Uint8,
+      Pointer<Uint8>,
+      Int32,
+      Pointer<Int32>,
+      Uint32,
+    );
+typedef LibusbBulkTransferDart =
+    int Function(
+      Pointer<LibusbDeviceHandle>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Int32>,
+      int,
+    );
 
 // libusb_interrupt_transfer — same signature as bulk
-typedef LibusbInterruptTransferNative = Int32 Function(
-  Pointer<LibusbDeviceHandle>,
-  Uint8,
-  Pointer<Uint8>,
-  Int32,
-  Pointer<Int32>,
-  Uint32,
-);
-typedef LibusbInterruptTransferDart = int Function(
-  Pointer<LibusbDeviceHandle>,
-  int,
-  Pointer<Uint8>,
-  int,
-  Pointer<Int32>,
-  int,
-);
+typedef LibusbInterruptTransferNative =
+    Int32 Function(
+      Pointer<LibusbDeviceHandle>,
+      Uint8,
+      Pointer<Uint8>,
+      Int32,
+      Pointer<Int32>,
+      Uint32,
+    );
+typedef LibusbInterruptTransferDart =
+    int Function(
+      Pointer<LibusbDeviceHandle>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Int32>,
+      int,
+    );
 
 // libusb_strerror(errcode) -> const char*
 typedef LibusbStrerrorNative = Pointer<Utf8> Function(Int32);
@@ -406,15 +404,14 @@ class LibusbBindings {
   late final LibusbClaimInterfaceDart claimInterface;
   late final LibusbReleaseInterfaceDart releaseInterface;
   late final LibusbSetAutoDetachKernelDriverDart setAutoDetachKernelDriver;
+  late final LibusbControlTransferDart controlTransfer;
   late final LibusbBulkTransferDart bulkTransfer;
   late final LibusbInterruptTransferDart interruptTransfer;
   late final LibusbStrerrorDart strerror;
 
   LibusbBindings._(this._lib) {
-    init = _lib
-        .lookupFunction<LibusbInitNative, LibusbInitDart>('libusb_init');
-    exit = _lib
-        .lookupFunction<LibusbExitNative, LibusbExitDart>('libusb_exit');
+    init = _lib.lookupFunction<LibusbInitNative, LibusbInitDart>('libusb_init');
+    exit = _lib.lookupFunction<LibusbExitNative, LibusbExitDart>('libusb_exit');
     getDeviceList = _lib
         .lookupFunction<LibusbGetDeviceListNative, LibusbGetDeviceListDart>(
           'libusb_get_device_list',
@@ -428,10 +425,10 @@ class LibusbBindings {
           LibusbGetDeviceDescriptorNative,
           LibusbGetDeviceDescriptorDart
         >('libusb_get_device_descriptor');
-    open = _lib
-        .lookupFunction<LibusbOpenNative, LibusbOpenDart>('libusb_open');
-    close = _lib
-        .lookupFunction<LibusbCloseNative, LibusbCloseDart>('libusb_close');
+    open = _lib.lookupFunction<LibusbOpenNative, LibusbOpenDart>('libusb_open');
+    close = _lib.lookupFunction<LibusbCloseNative, LibusbCloseDart>(
+      'libusb_close',
+    );
     getStringDescriptorAscii = _lib
         .lookupFunction<
           LibusbGetStringDescriptorAsciiNative,
@@ -461,6 +458,10 @@ class LibusbBindings {
           LibusbSetAutoDetachKernelDriverNative,
           LibusbSetAutoDetachKernelDriverDart
         >('libusb_set_auto_detach_kernel_driver');
+    controlTransfer = _lib
+        .lookupFunction<LibusbControlTransferNative, LibusbControlTransferDart>(
+          'libusb_control_transfer',
+        );
     bulkTransfer = _lib
         .lookupFunction<LibusbBulkTransferNative, LibusbBulkTransferDart>(
           'libusb_bulk_transfer',
@@ -470,10 +471,9 @@ class LibusbBindings {
           LibusbInterruptTransferNative,
           LibusbInterruptTransferDart
         >('libusb_interrupt_transfer');
-    strerror = _lib
-        .lookupFunction<LibusbStrerrorNative, LibusbStrerrorDart>(
-          'libusb_strerror',
-        );
+    strerror = _lib.lookupFunction<LibusbStrerrorNative, LibusbStrerrorDart>(
+      'libusb_strerror',
+    );
   }
 
   /// Load libusb from the system.

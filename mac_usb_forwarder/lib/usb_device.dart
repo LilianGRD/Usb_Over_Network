@@ -53,10 +53,9 @@ class UsbDeviceInfo {
 
   @override
   String toString() {
-    var name =
-        manufacturer.isNotEmpty || product.isNotEmpty
-            ? '$manufacturer - $product'
-            : 'Unknown Device';
+    var name = manufacturer.isNotEmpty || product.isNotEmpty
+        ? '$manufacturer - $product'
+        : 'Unknown Device';
     return '$name (VID: ${vendorId.toRadixString(16).padLeft(4, '0')}, '
         'PID: ${productId.toRadixString(16).padLeft(4, '0')}, '
         'Class: $className)';
@@ -205,17 +204,19 @@ class UsbManager {
       }
       calloc.free(handlePtr);
 
-      devices.add(UsbDeviceInfo(
-        vendorId: desc.idVendor,
-        productId: desc.idProduct,
-        manufacturer: manufacturer,
-        product: product,
-        deviceClass: desc.bDeviceClass,
-        deviceSubClass: desc.bDeviceSubClass,
-        deviceProtocol: desc.bDeviceProtocol,
-        index: i,
-        devicePtr: dev,
-      ));
+      devices.add(
+        UsbDeviceInfo(
+          vendorId: desc.idVendor,
+          productId: desc.idProduct,
+          manufacturer: manufacturer,
+          product: product,
+          deviceClass: desc.bDeviceClass,
+          deviceSubClass: desc.bDeviceSubClass,
+          deviceProtocol: desc.bDeviceProtocol,
+          index: i,
+          devicePtr: dev,
+        ),
+      );
     }
 
     calloc.free(descPtr);
@@ -279,12 +280,14 @@ class UsbManager {
       var alt = iface.altsetting.ref; // Use first alt setting
       for (var e = 0; e < alt.bNumEndpoints; e++) {
         var ep = (alt.endpoint + e).ref;
-        endpoints.add(EndpointInfo(
-          address: ep.bEndpointAddress,
-          attributes: ep.bmAttributes,
-          maxPacketSize: ep.wMaxPacketSize,
-          interval: ep.bInterval,
-        ));
+        endpoints.add(
+          EndpointInfo(
+            address: ep.bEndpointAddress,
+            attributes: ep.bmAttributes,
+            maxPacketSize: ep.wMaxPacketSize,
+            interval: ep.bInterval,
+          ),
+        );
       }
     }
 
@@ -325,7 +328,11 @@ class UsbManager {
     if (rc != libusbSuccess) {
       calloc.free(buffer);
       calloc.free(transferred);
-      throw UsbException('Read failed on EP 0x${endpointAddress.toRadixString(16)}', rc, _lib);
+      throw UsbException(
+        'Read failed on EP 0x${endpointAddress.toRadixString(16)}',
+        rc,
+        _lib,
+      );
     }
 
     var count = transferred.value;
@@ -368,9 +375,77 @@ class UsbManager {
     calloc.free(transferred);
 
     if (rc != libusbSuccess && rc != libusbErrorTimeout) {
-      throw UsbException('Write failed on EP 0x${endpointAddress.toRadixString(16)}', rc, _lib);
+      throw UsbException(
+        'Write failed on EP 0x${endpointAddress.toRadixString(16)}',
+        rc,
+        _lib,
+      );
     }
     return count;
+  }
+
+  /// Perform a USB control transfer.
+  /// Used for Endpoint 0 initialization and querying descriptors.
+  ///
+  /// Returns the transferred payload for IN transfers, or an empty [Uint8List]
+  /// for OUT transfers. Throws [UsbException] on error.
+  Uint8List controlTransfer({
+    required int requestType,
+    required int request,
+    required int value,
+    required int index,
+    Uint8List? data,
+    int length = 0,
+    int timeoutMs = 1000,
+  }) {
+    _ensureHandle();
+
+    // Direction is encoded in bit 7 of bmRequestType
+    var isIn = (requestType & 0x80) != 0;
+
+    // For IN transfers, length specifies how much to read
+    // For OUT transfers, length should match data.length
+    var actualLength = isIn ? length : (data?.length ?? 0);
+    var buffer = calloc<Uint8>(actualLength > 0 ? actualLength : 1);
+
+    // Copy OUT data to buffer if needed
+    if (!isIn && data != null && data.isNotEmpty) {
+      for (var i = 0; i < data.length; i++) {
+        (buffer + i).value = data[i];
+      }
+    }
+
+    var rc = _lib.controlTransfer(
+      _handle!,
+      requestType,
+      request,
+      value,
+      index,
+      buffer,
+      actualLength,
+      timeoutMs,
+    );
+
+    if (rc < 0) {
+      calloc.free(buffer);
+      throw UsbException(
+        'Control transfer failed (req: 0x${request.toRadixString(16)})',
+        rc,
+        _lib,
+      );
+    }
+
+    var result = Uint8List(0);
+    // For IN transfers, rc contains the actual number of bytes read
+    if (isIn && rc > 0) {
+      result = Uint8List(rc);
+      for (var i = 0; i < rc; i++) {
+        result[i] = (buffer + i).value;
+      }
+    }
+
+    calloc.free(buffer);
+    return result;
   }
 
   /// Close the currently opened device and release the interface.
@@ -428,7 +503,7 @@ class UsbException implements Exception {
   final String errorName;
 
   UsbException(this.message, this.errorCode, LibusbBindings lib)
-      : errorName = lib.errorString(errorCode);
+    : errorName = lib.errorString(errorCode);
 
   /// True if this is an access denied error (common on macOS for HID devices).
   bool get isAccessDenied => errorCode == libusbErrorAccess;
